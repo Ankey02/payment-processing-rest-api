@@ -1,37 +1,37 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using PayApi.Api.Auth;
 using PayApi.Application.Payments;
 using PayApi.Domain.Common;
 
 namespace PayApi.Api.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("payments")]
 public class PaymentsController : ControllerBase
 {
-    private const string MerchantHeader = "X-Merchant-Id";
-    private readonly AuthorizePaymentService _authorize;
+    private readonly AuthorizePaymentService _authorizeService;
     private readonly PaymentService _payments;
 
-    public PaymentsController(AuthorizePaymentService authorize, PaymentService payments)
+    public PaymentsController(AuthorizePaymentService authorizeService, PaymentService payments)
     {
-        _authorize = authorize;
+        _authorizeService = authorizeService;
         _payments = payments;
     }
 
     [HttpPost]
-    public async Task<IActionResult> Authorize(
+    public async Task<IActionResult> AuthorizePayment(
         [FromBody] AuthorizePaymentRequest request,
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
-        [FromHeader(Name = MerchantHeader)] Guid? merchantId,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(idempotencyKey))
             return BadRequest(new { error = "Idempotency-Key header is required." });
-        if (merchantId is null) return MissingMerchant();
 
         try
         {
-            var result = await _authorize.ExecuteAsync(merchantId.Value, idempotencyKey, request, ct);
+            var result = await _authorizeService.ExecuteAsync(User.MerchantId(), idempotencyKey, request, ct);
             Response.Headers["Idempotent-Replayed"] = result.Replayed.ToString().ToLowerInvariant();
             return new ContentResult
             {
@@ -47,17 +47,14 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
-    public async Task<IActionResult> Get(
-        Guid id, [FromHeader(Name = MerchantHeader)] Guid? merchantId, CancellationToken ct)
+    public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
-        if (merchantId is null) return MissingMerchant();
-        var p = await _payments.GetAsync(merchantId.Value, id, ct);
+        var p = await _payments.GetAsync(User.MerchantId(), id, ct);
         return p is null ? NotFound() : Ok(p);
     }
 
     [HttpGet]
     public async Task<IActionResult> List(
-        [FromHeader(Name = MerchantHeader)] Guid? merchantId,
         [FromQuery] string? status,
         [FromQuery(Name = "from")] DateTime? createdFrom,
         [FromQuery(Name = "to")] DateTime? createdTo,
@@ -65,11 +62,10 @@ public class PaymentsController : ControllerBase
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20)
     {
-        if (merchantId is null) return MissingMerchant();
         try
         {
             return Ok(await _payments.ListAsync(
-                merchantId.Value, status, createdFrom, createdTo, page, pageSize, ct));
+                User.MerchantId(), status, createdFrom, createdTo, page, pageSize, ct));
         }
         catch (DomainException ex)
         {
@@ -78,28 +74,22 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpPost("{id:guid}/capture")]
-    public Task<IActionResult> Capture(
-        Guid id, [FromHeader(Name = MerchantHeader)] Guid? merchantId, CancellationToken ct) =>
-        Transition(merchantId, m => _payments.CaptureAsync(m, id, ct));
+    public Task<IActionResult> Capture(Guid id, CancellationToken ct) =>
+        Transition(m => _payments.CaptureAsync(m, id, ct));
 
     [HttpPost("{id:guid}/void")]
-    public Task<IActionResult> Void(
-        Guid id, [FromHeader(Name = MerchantHeader)] Guid? merchantId, CancellationToken ct) =>
-        Transition(merchantId, m => _payments.VoidAsync(m, id, ct));
+    public Task<IActionResult> Void(Guid id, CancellationToken ct) =>
+        Transition(m => _payments.VoidAsync(m, id, ct));
 
     [HttpPost("{id:guid}/refund")]
-    public Task<IActionResult> Refund(
-        Guid id, [FromBody] RefundRequest request,
-        [FromHeader(Name = MerchantHeader)] Guid? merchantId, CancellationToken ct) =>
-        Transition(merchantId, m => _payments.RefundAsync(m, id, request.Amount, ct));
+    public Task<IActionResult> Refund(Guid id, [FromBody] RefundRequest request, CancellationToken ct) =>
+        Transition(m => _payments.RefundAsync(m, id, request.Amount, ct));
 
-    private async Task<IActionResult> Transition(
-        Guid? merchantId, Func<Guid, Task<PaymentResponse?>> action)
+    private async Task<IActionResult> Transition(Func<Guid, Task<PaymentResponse?>> action)
     {
-        if (merchantId is null) return MissingMerchant();
         try
         {
-            var result = await action(merchantId.Value);
+            var result = await action(User.MerchantId());
             return result is null ? NotFound() : Ok(result);
         }
         catch (DomainException ex)
@@ -107,7 +97,4 @@ public class PaymentsController : ControllerBase
             return Conflict(new { error = ex.Message });
         }
     }
-
-    private IActionResult MissingMerchant() =>
-        BadRequest(new { error = $"{MerchantHeader} header is required." });
 }

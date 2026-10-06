@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using PayApi.Application.Merchants;
 using PayApi.Infrastructure.Persistence;
 using Xunit;
 
@@ -14,11 +15,15 @@ public class PaymentApiTests : IClassFixture<ApiFactory>
 
     public PaymentApiTests(ApiFactory factory) => _factory = factory;
 
-    private HttpClient ClientFor(Guid merchantId)
+    private async Task<(HttpClient Client, Guid MerchantId)> NewMerchantClientAsync()
     {
+        using var scope = _factory.Services.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<MerchantService>();
+        var created = await service.CreateAsync("Test " + Guid.NewGuid(), CancellationToken.None);
+
         var client = _factory.CreateClient();
-        client.DefaultRequestHeaders.Add("X-Merchant-Id", merchantId.ToString());
-        return client;
+        client.DefaultRequestHeaders.Add("X-Api-Key", created.ApiKey);
+        return (client, created.MerchantId);
     }
 
     private static HttpRequestMessage Authorize(string key, long amount = 5000)
@@ -35,9 +40,42 @@ public class PaymentApiTests : IClassFixture<ApiFactory>
         JsonDocument.Parse(json).RootElement.GetProperty("id").GetGuid();
 
     [Fact]
+    public async Task Request_WithoutApiKey_Returns401()
+    {
+        var anonymous = _factory.CreateClient();
+        var response = await anonymous.SendAsync(Authorize(Guid.NewGuid().ToString()));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Request_WithWrongApiKey_Returns401()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Api-Key", "pk_test_wrong");
+        var response = await client.SendAsync(Authorize(Guid.NewGuid().ToString()));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Merchant_CannotSeeAnotherMerchantsPayment()
+    {
+        var (clientA, _) = await NewMerchantClientAsync();
+        var (clientB, _) = await NewMerchantClientAsync();
+
+        var created = await clientA.SendAsync(Authorize(Guid.NewGuid().ToString()));
+        var id = ReadId(await created.Content.ReadAsStringAsync());
+
+        var asOwner = await clientA.GetAsync($"/payments/{id}");
+        var asOther = await clientB.GetAsync($"/payments/{id}");
+
+        Assert.Equal(HttpStatusCode.OK, asOwner.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, asOther.StatusCode);
+    }
+
+    [Fact]
     public async Task Authorize_SameKeyTwice_ReturnsSamePayment()
     {
-        var client = ClientFor(Guid.NewGuid());
+        var (client, _) = await NewMerchantClientAsync();
         var key = Guid.NewGuid().ToString();
 
         var first = await client.SendAsync(Authorize(key));
@@ -53,7 +91,7 @@ public class PaymentApiTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Authorize_SameKeyDifferentBody_Returns422()
     {
-        var client = ClientFor(Guid.NewGuid());
+        var (client, _) = await NewMerchantClientAsync();
         var key = Guid.NewGuid().ToString();
 
         await client.SendAsync(Authorize(key, 5000));
@@ -65,8 +103,7 @@ public class PaymentApiTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Authorize_20ParallelRequestsSameKey_CreatesExactlyOnePayment()
     {
-        var merchant = Guid.NewGuid();
-        var client = ClientFor(merchant);
+        var (client, merchantId) = await NewMerchantClientAsync();
         var key = Guid.NewGuid().ToString();
 
         var responses = await Task.WhenAll(
@@ -76,13 +113,13 @@ public class PaymentApiTests : IClassFixture<ApiFactory>
 
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        Assert.Equal(1, await db.Payments.CountAsync(p => p.MerchantId == merchant));
+        Assert.Equal(1, await db.Payments.CountAsync(p => p.MerchantId == merchantId));
     }
 
     [Fact]
     public async Task Capture_50ParallelRequests_OnlyOneSucceeds_AndLedgerHasTwoEntries()
     {
-        var client = ClientFor(Guid.NewGuid());
+        var (client, _) = await NewMerchantClientAsync();
         var created = await client.SendAsync(Authorize(Guid.NewGuid().ToString()));
         var id = ReadId(await created.Content.ReadAsStringAsync());
 
