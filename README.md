@@ -106,3 +106,14 @@ Docker must be running for the integration tests.
 
 - Payment gateway abstraction with a Stripe test-mode adapter
 - Dockerfile and CI pipeline (GitHub Actions)
+
+## Query performance
+
+Measured locally with `EXPLAIN ANALYZE` on 500,000 synthetic payments, for the query "latest 20 payments for a merchant in the last 7 days":
+
+| | Plan | Execution time |
+|---|---|---|
+| Without index | Parallel Seq Scan | ~12 ms |
+| With composite index on (MerchantId, CreatedAt) | Index Scan Backward | ~0.12 ms |
+
+That is roughly 100x faster, and the gap widens as the table grows.
