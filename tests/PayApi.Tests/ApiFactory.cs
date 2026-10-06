@@ -11,8 +11,7 @@ namespace PayApi.Tests;
 
 public class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _db = new PostgreSqlBuilder()
-        .WithImage("postgres:16")
+    private readonly PostgreSqlContainer _db = new PostgreSqlBuilder("postgres:16")
         .Build();
 
     public async Task InitializeAsync()

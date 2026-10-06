@@ -4,6 +4,7 @@ using PayApi.Api.Middleware;
 using PayApi.Application;
 using PayApi.Application.Payments;
 using PayApi.Infrastructure.Persistence;
+using Scalar.AspNetCore;
 using Serilog;
 using Serilog.Events;
 
@@ -51,7 +52,12 @@ app.UseSerilogRequestLogging();
 app.UseExceptionHandler();
 app.UseRateLimiter();
 
-if (app.Environment.IsDevelopment()) app.MapOpenApi();
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+    app.MapScalarApiReference();
+}
+
 app.MapHealthChecks("/health");
 app.MapControllers();
 app.Run();
