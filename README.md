@@ -117,3 +117,11 @@ Measured locally with `EXPLAIN ANALYZE` on 500,000 synthetic payments, for the q
 | With composite index on (MerchantId, CreatedAt) | Index Scan Backward | ~0.12 ms |
 
 That is roughly 100x faster, and the gap widens as the table grows.
+
+## Run everything with Docker
+
+One command starts PostgreSQL and the API (tables are created automatically on startup):
+
+    docker compose up -d --build
+
+Then open http://localhost:8080/scalar/v1 for the interactive docs, or check http://localhost:8080/health.
